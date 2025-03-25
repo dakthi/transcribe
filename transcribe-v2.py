@@ -4,6 +4,7 @@ import torch
 import pandas as pd
 import logging
 import time
+import subprocess
 from tqdm import tqdm
 
 # Configure logging
@@ -11,16 +12,20 @@ logging.basicConfig(
     filename="transcription.log",
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filemode="w",  # Overwrites the log file on each run
+    filemode="w",
 )
 
 # Define paths
 MASTER_FOLDER = os.path.expanduser("~/Downloads/Organized/Folders/Folders/python-transcribe")
 CSV_FILE = os.path.join(MASTER_FOLDER, "transcription.csv")
+SEGMENTS_FOLDER = os.path.join(MASTER_FOLDER, "segments")
 
-# Load Whisper model with FP32 enforcement
-MODEL_NAME = "turbo"  # Choose "tiny", "base", "small", "medium", "large", "turbo"
-model = whisper.load_model(MODEL_NAME).to(torch.float32)  # 🔥 Force FP32
+# Ensure segments folder exists
+os.makedirs(SEGMENTS_FOLDER, exist_ok=True)
+
+# Load Whisper model with FP32
+MODEL_NAME = "large-v3"
+model = whisper.load_model(MODEL_NAME).to(torch.float32)
 
 def ensure_csv_exists():
     """Create CSV file with headers if it doesn't exist."""
@@ -29,19 +34,25 @@ def ensure_csv_exists():
         df = pd.DataFrame(columns=["Filename", "Transcription"])
         df.to_csv(CSV_FILE, index=False, encoding="utf-8-sig")
 
+def clean_csv(df):
+    """Drop any unnamed columns caused by prior indexing."""
+    return df.loc[:, ~df.columns.str.contains("^Unnamed")]
+
 def load_existing_transcriptions():
-    """Load existing transcriptions from CSV to avoid re-processing files."""
+    """Load existing transcriptions to avoid re-processing."""
     if os.path.exists(CSV_FILE):
         df = pd.read_csv(CSV_FILE)
+        df = clean_csv(df)
         if "Filename" in df:
             return set(df["Filename"].apply(os.path.basename).astype(str))
     return set()
 
 def update_csv(filename, transcription):
-    """Update CSV file with the transcription in real-time."""
+    """Update the CSV with new or updated transcription."""
     base_filename = os.path.basename(filename)
     try:
         df = pd.read_csv(CSV_FILE)
+        df = clean_csv(df)
     except Exception as e:
         logging.error(f"[ERROR] Reading CSV: {e}")
         df = pd.DataFrame(columns=["Filename", "Transcription"])
@@ -55,39 +66,53 @@ def update_csv(filename, transcription):
     df.to_csv(CSV_FILE, index=False, encoding="utf-8-sig")
 
 def transcribe_audio_local(file_path):
-    """
-    Transcribe audio using the local Whisper model.
-    Uses tqdm progress bar in logs and updates CSV in real-time.
-    """
+    """Transcribe audio file with Whisper using segmentation and word-level control."""
     base_filename = os.path.basename(file_path)
-    logging.info(f"\n[START] Transcribing: {base_filename}")
+    logging.info(f"[START] Transcribing: {base_filename}")
+    transcription = ""
 
     try:
-        # Load and preprocess audio
-        audio = whisper.load_audio(file_path)
-        audio = whisper.pad_or_trim(audio)
+        file_segments_dir = os.path.join(SEGMENTS_FOLDER, os.path.splitext(base_filename)[0])
+        os.makedirs(file_segments_dir, exist_ok=True)
 
-        # Convert to log-Mel spectrogram with FP32 enforcement
-        mel = whisper.log_mel_spectrogram(audio).to(torch.float32).to(model.device)
+        output_pattern = os.path.join(file_segments_dir, f"{base_filename}_%03d.wav")
 
-        # Detect language
-        result = model.transcribe(file_path, fp16=False)
-        detected_lang = result["language"]
+        cmd = [
+            "ffmpeg", "-i", file_path,
+            "-f", "segment", "-segment_time", "30",
+            "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1",
+            output_pattern
+        ]
+        subprocess.run(cmd, check=True)
+
+        segment_files = sorted(
+            [os.path.join(file_segments_dir, f) for f in os.listdir(file_segments_dir) if f.endswith(".wav")]
+        )
+
+        if not segment_files:
+            logging.error(f"[ERROR] No segments created for {base_filename}.")
+            return None
+
+        lang_result = model.transcribe(segment_files[0], fp16=False)
+        detected_lang = lang_result["language"]
         logging.info(f"[INFO] Detected Language: {detected_lang}")
 
-        total_segments = len(result["segments"])
-        transcription = ""
+        with tqdm(total=len(segment_files), desc=f"Processing {base_filename}", unit="segment") as pbar:
+            for seg in segment_files:
+                result = model.transcribe(
+                    seg,
+                    fp16=False,
+                    word_timestamps=True,
+                    language=detected_lang,
+                    hallucination_silence_threshold=2.0  # Skip silent segments that might be hallucinated
+                )
 
-        with tqdm(total=total_segments, desc=f"Processing {base_filename}", unit="segment") as pbar:
-            for segment in result["segments"]:
-                segment_text = segment["text"]
-                transcription += " " + segment_text
-                update_csv(base_filename, transcription.strip())  # Update CSV in real-time
+                transcription += " " + result["text"]
+                update_csv(base_filename, transcription.strip())
+                pbar.update(1)
+                time.sleep(0.1)
 
-                pbar.update(1)  # Update progress bar
-                time.sleep(0.1)  # Small delay for better visibility in logs
-
-        logging.info(f"\n[COMPLETED] {base_filename} - Transcription saved.")
+        logging.info(f"[COMPLETED] {base_filename} - Transcription saved.")
         return transcription
 
     except Exception as e:
@@ -95,7 +120,6 @@ def transcribe_audio_local(file_path):
         return None
 
 def main():
-    """Process and transcribe new audio files in the folder."""
     if not os.path.exists(MASTER_FOLDER):
         logging.error(f"[ERROR] Folder '{MASTER_FOLDER}' does not exist.")
         return
@@ -111,7 +135,6 @@ def main():
 
             file_path = os.path.join(MASTER_FOLDER, file)
             logging.info(f"[PROCESSING] {file}")
-
             transcript = transcribe_audio_local(file_path)
 
             if transcript:
