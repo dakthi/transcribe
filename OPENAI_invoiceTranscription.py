@@ -39,7 +39,7 @@ def create_message_content(base64_images: List[str]) -> List[dict]:
     """Create the message content for the API request."""
     prompt_text = {
         "type": "text",
-        "text": """transcribe the details of these invoices, each details separated by a coma, details required: date, supplier, amount, in the exact order and not anything additional"""
+        "text": """transcribe the details of these invoices, each details separated by a coma, details required: date, supplier, amount (just number no currency sign), in the exact order and not anything additional"""
     }
     
     image_contents = [
@@ -80,10 +80,9 @@ def select_master_folder() -> str:
         print("Invalid folder path. Please try again.")
 
 def process_folders() -> None:
-    """Process all images in master folder and save descriptions to TXT."""
+    """Process all images in master folder and save invoice info to CSV."""
     master_folder = select_master_folder()
     
-    # Get and encode images directly from master folder
     image_paths = get_image_paths(str(master_folder))
     if not image_paths:
         print("No images found in folder")
@@ -91,28 +90,65 @@ def process_folders() -> None:
         
     print(f"Found {len(image_paths)} images to process")
     
-    # Create TXT file in the master folder
-    txt_path = os.path.join(master_folder, "descriptions.txt")
-    with open(txt_path, 'w', encoding='utf-8') as txtfile:
-        # Process each image
+    # CSV template headers (A to H):
+    headers = [
+        "A",               # Leave blank
+        "Sn-",             # Leave blank
+        "Type -",          # Leave blank
+        "Date Account Referen+t",  # We’ll store date here
+        "Nominal A/C Ref =",       # Supplier name here
+        "Reference",       # Invoice/reference number
+        "Details",         # Description
+        "Net Amount -",    # Net amount
+        "Tax Amount -",    # VAT/Tax
+        "Gross Amount",    # Total/Gross
+        "Tax Code ~"       # Leave blank
+    ]
+    
+    csv_path = os.path.join(master_folder, "invoices.csv")
+    with open(csv_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(headers)
+        
         for index, image_path in enumerate(tqdm(image_paths, desc="Processing images"), 1):
             print(f"\nProcessing image: {Path(image_path).name}")
             
-            # Encode single image
             base64_image = encode_image(image_path)
             if not base64_image:
                 print("Failed to encode image")
                 continue
                 
-            # Get description and write to TXT
             description = get_description([base64_image])
             if description:
-                txtfile.write(f"{index}. {description}\n")
-                print("\nDescription:")
+                print("\nRaw Description:")
                 print(description)
-                print("\n" + "-"*50)
-    
-    print(f"\nDescriptions saved to: {txt_path}")
+                print("-" * 50)
+                
+                # Parse description assuming: date, supplier, ref, details, net, tax, gross
+                try:
+                    parts = [part.strip() for part in description.split(",")]
+                    while len(parts) < 7:
+                        parts.append("")
+                    date, supplier, ref, details, net, tax, gross = parts[:7]
+                    
+                    # Write to CSV in correct column order
+                    row = [
+                        "", "", "",        # A, Sn-, Type -
+                        date,
+                        supplier,
+                        ref,
+                        details,
+                        net,
+                        tax,
+                        gross,
+                        ""                 # Tax Code ~
+                    ]
+                    writer.writerow(row)
+                except Exception as e:
+                    print(f"Error parsing description: {e}")
+                    continue
+
+    print(f"\nInvoices saved to: {csv_path}")
 
 if __name__ == "__main__":
     process_folders()
