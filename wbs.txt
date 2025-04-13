@@ -1,0 +1,10 @@
+1. Business Operations
+    1.1 Marketing
+        1.1.1 Content
+        1.1.2 SEO
+    1.2 Sales
+        1.2.1 Outreach
+        1.2.2 CRM setup
+2. Product Development
+    2.1 MVP
+    2.2 Testing

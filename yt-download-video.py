@@ -1,6 +1,6 @@
 import yt_dlp
 
-url = "https://www.youtube.com/watch?v=OGdKdyiENKI"
+url = "https://www.youtube.com/watch?v=ZhCBEfLwEr4"
 ydl_opts = {
     "format": "best",
     "outtmpl": "%(title)s.%(ext)s"

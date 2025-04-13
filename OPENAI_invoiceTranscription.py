@@ -152,4 +152,3 @@ def process_folders() -> None:
 
 if __name__ == "__main__":
     process_folders()
-
